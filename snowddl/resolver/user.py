@@ -48,76 +48,11 @@ class UserResolver(AbstractResolver):
         return self.config.get_blueprints_by_type(UserBlueprint)
 
     def create_object(self, bp: UserBlueprint):
-        query = self.engine.query_builder()
-
-        query.append(
-            "CREATE USER {name:i}",
-            {
-                "name": bp.full_name,
-            },
+        raise ValueError(
+            f"User [{bp.full_name}] is defined in YAML config but does not exist in Snowflake. "
+            f"Users must be created manually in Snowflake before they can be managed by SnowDDL. "
+            f"Please create the user first, then re-run SnowDDL to assign the [{self._get_user_role_ident(bp)}] role."
         )
-
-        # Common properties
-        query.append_nl("LOGIN_NAME = {login_name}", {"login_name": bp.login_name})
-        query.append_nl("DISPLAY_NAME = {display_name}", {"display_name": bp.display_name})
-
-        if bp.disabled:
-            query.append_nl("DISABLED = {disabled:b}", {"disabled": bp.disabled})
-
-        if bp.first_name:
-            query.append_nl("FIRST_NAME = {first_name}", {"first_name": bp.first_name})
-
-        if bp.last_name:
-            query.append_nl("LAST_NAME = {last_name}", {"last_name": bp.last_name})
-
-        if bp.email:
-            query.append_nl("EMAIL = {email}", {"email": bp.email})
-
-        if bp.default_warehouse:
-            query.append_nl("DEFAULT_WAREHOUSE = {default_warehouse}", {"default_warehouse": bp.default_warehouse})
-
-        if bp.default_namespace:
-            query.append_nl("DEFAULT_NAMESPACE = {default_namespace}", {"default_namespace": bp.default_namespace})
-
-        query.append_nl("DEFAULT_ROLE = {default_role:i}", {"default_role": self._get_user_role_ident(bp)})
-
-        if bp.comment:
-            query.append_nl("COMMENT = {comment}", {"comment": bp.comment})
-
-        # Security properties
-        if bp.password:
-            query.append_nl("PASSWORD = {password}", {"password": bp.password})
-
-        if bp.rsa_public_key:
-            query.append_nl("RSA_PUBLIC_KEY = {rsa_public_key}", {"rsa_public_key": bp.rsa_public_key})
-
-        if bp.rsa_public_key_2:
-            query.append_nl("RSA_PUBLIC_KEY_2 = {rsa_public_key_2}", {"rsa_public_key_2": bp.rsa_public_key_2})
-
-        # User type
-        if bp.type:
-            query.append_nl("TYPE = {type}", {"type": bp.type})
-
-        # Workload identity
-        if bp.workload_identity:
-            query.append_nl("WORKLOAD_IDENTITY = (")
-            query.append(self._build_workload_identity_parameters(bp))
-            query.append_nl(")")
-
-        # Object and session parameters
-        query.append(self._build_common_parameters(bp))
-
-        self.engine.execute_safe_ddl(query)
-
-        self.engine.execute_safe_ddl(
-            "GRANT ROLE {user_role:i} TO USER {user_name:i}",
-            {
-                "user_name": bp.full_name,
-                "user_role": self._get_user_role_ident(bp),
-            },
-        )
-
-        return ResolveResult.CREATE
 
     def compare_object(self, bp: UserBlueprint, row: dict):
         result = ResolveResult.NOCHANGE
