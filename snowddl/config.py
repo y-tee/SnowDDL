@@ -103,6 +103,7 @@ class SnowDDLConfig:
                 owner_create_grants=[
                     PermissionModelCreateGrant(on=ObjectType.FILE_FORMAT),
                     PermissionModelCreateGrant(on=ObjectType.FUNCTION),
+                    PermissionModelCreateGrant(on=ObjectType.MCP_SERVER),
                     PermissionModelCreateGrant(on=ObjectType.PROCEDURE),
                     PermissionModelCreateGrant(on=ObjectType.TABLE),
                     PermissionModelCreateGrant(on=ObjectType.VIEW),
@@ -115,6 +116,7 @@ class SnowDDLConfig:
                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.FILE_FORMAT),
                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.FUNCTION),
                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.MATERIALIZED_VIEW),
+                    PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.MCP_SERVER),
                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.PIPE),
                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.PROCEDURE),
                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.SEQUENCE),
@@ -142,6 +144,7 @@ class SnowDDLConfig:
                     PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.FUNCTION),
                     PermissionModelFutureGrant(privilege="SELECT", on=ObjectType.MATERIALIZED_VIEW),
                     PermissionModelFutureGrant(privilege="REFERENCES", on=ObjectType.MATERIALIZED_VIEW),
+                    PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.MCP_SERVER),
                     PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.PROCEDURE),
                     PermissionModelFutureGrant(privilege="READ", on=ObjectType.STAGE),
                     PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.STAGE),

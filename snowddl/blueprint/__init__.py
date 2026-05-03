@@ -25,6 +25,7 @@ from .blueprint import (
     JoinPolicyBlueprint,
     MaterializedViewBlueprint,
     MaskingPolicyBlueprint,
+    MCPServerBlueprint,
     NetworkPolicyBlueprint,
     NetworkRuleBlueprint,
     OutboundShareBlueprint,
@@ -108,5 +109,6 @@ from .reference import (
     RowAccessPolicyReference,
     TagReference,
 )
+from .mcp_server import MCPServerTool
 from .semantic_view import SemanticViewExpression, SemanticViewRelationship, SemanticViewTable
 from .stage import StageWithPath, StageUploadFile

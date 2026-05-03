@@ -42,6 +42,7 @@ from .reference import (
     RowAccessPolicyReference,
     TagReference,
 )
+from .mcp_server import MCPServerTool
 from .semantic_view import SemanticViewExpression, SemanticViewRelationship, SemanticViewTable
 from .stage import StageWithPath
 from ..model import BaseModelWithConfig
@@ -273,6 +274,23 @@ class MaterializedViewBlueprint(SchemaObjectBlueprint):
     columns: Optional[List[ViewColumn]] = None
     is_secure: bool = False
     cluster_by: Optional[List[str]] = None
+
+
+class MCPServerBlueprint(SchemaObjectBlueprint):
+    """
+    Snowflake-managed MCP server. Materialised by:
+
+        CREATE OR REPLACE MCP SERVER <db>.<schema>.<name>
+        FROM SPECIFICATION $$ <yaml> $$
+        [COMMENT = '...']
+
+    The YAML body is generated in the resolver from `tools` (and any
+    `spec_extra` fields the user supplied alongside it).
+
+    See: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
+    """
+    tools: List[MCPServerTool]
+    spec_extra: Dict[str, Union[bool, float, int, str, list, dict]] = {}
 
 
 class MaskingPolicyBlueprint(SchemaObjectBlueprint):

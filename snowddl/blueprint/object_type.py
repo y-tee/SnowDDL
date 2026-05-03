@@ -181,6 +181,13 @@ class ObjectType(Enum):
         "blueprint_cls": "MaterializedViewBlueprint",
     }
 
+    MCP_SERVER = {
+        "singular": "MCP SERVER",
+        "plural": "MCP SERVERS",
+        "is_future_grant_supported": True,
+        "blueprint_cls": "MCPServerBlueprint",
+    }
+
     NETWORK_POLICY = {
         "singular": "NETWORK POLICY",
         "plural": "NETWORK POLICIES",

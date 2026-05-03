@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Implemented `MCP_SERVER` object type for [Snowflake-managed MCP servers](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp) (Cortex Agents). Schema object YAML lives under `mcp_server/` and accepts a list of `tools:` plus optional free-form `spec_extra:` for forward compatibility with the evolving `FROM SPECIFICATION` body. The default permission model now grants `CREATE MCP SERVER` to schema OWNER, future `OWNERSHIP` to OWNER, and future `USAGE` to READ.
+
 ## [0.66.4] - 2026-04-17
 
 - Removed unintended debug output when parsing permission models.
