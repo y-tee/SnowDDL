@@ -1,0 +1,508 @@
+From f93a1cc85468de841205e944aec5f38719751dcb Mon Sep 17 00:00:00 2001
+From: ying <thisisytee@gmail.com>
+Date: Sun, 3 May 2026 10:59:01 +0000
+Subject: [PATCH] feat: implement MCP_SERVER object type for Snowflake-managed
+ Cortex Agents
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds full SnowDDL support for Snowflake's managed MCP server (Cortex
+Agents MCP) — see https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp.
+
+Schema-object YAML lives under <db>/<schema>/mcp_server/<name>.yaml and
+accepts:
+
+  tools:
+    - name: ...
+      type: CORTEX_SEARCH_SERVICE_QUERY|CORTEX_ANALYST_MESSAGE|CORTEX_AGENT_RUN|SYSTEM_EXECUTE_SQL|GENERIC
+      title|description|identifier: ...
+      <type-specific fields passed through verbatim>
+  spec_extra: { ... }
+  comment: ...
+
+Resolver renders YAML into CREATE OR REPLACE MCP SERVER ... FROM
+SPECIFICATION $$ ... $$ and embeds a short-hash in COMMENT for drift
+detection (mirrors SemanticView; ALTER MCP SERVER for tools is not yet
+exposed by Snowflake).
+
+RBAC: default permission model now grants CREATE MCP SERVER + future
+OWNERSHIP on MCP SERVERS to schema OWNER, future USAGE on MCP SERVERS
+to schema READ.
+---
+ CHANGELOG.md                     |   4 +
+ snowddl/blueprint/__init__.py    |   2 +
+ snowddl/blueprint/blueprint.py   |  18 ++++
+ snowddl/blueprint/mcp_server.py  |  32 +++++++
+ snowddl/blueprint/object_type.py |   7 ++
+ snowddl/config.py                |   3 +
+ snowddl/parser/__init__.py       |   3 +
+ snowddl/parser/mcp_server.py     |  79 ++++++++++++++++
+ snowddl/resolver/__init__.py     |   3 +
+ snowddl/resolver/mcp_server.py   | 158 +++++++++++++++++++++++++++++++
+ 10 files changed, 309 insertions(+)
+ create mode 100644 snowddl/blueprint/mcp_server.py
+ create mode 100644 snowddl/parser/mcp_server.py
+ create mode 100644 snowddl/resolver/mcp_server.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 51c2b8e..1751f51 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## [Unreleased]
++
++- Implemented `MCP_SERVER` object type for [Snowflake-managed MCP servers](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp) (Cortex Agents). Schema object YAML lives under `mcp_server/` and accepts a list of `tools:` plus optional free-form `spec_extra:` for forward compatibility with the evolving `FROM SPECIFICATION` body. The default permission model now grants `CREATE MCP SERVER` to schema OWNER, future `OWNERSHIP` to OWNER, and future `USAGE` to READ.
++
+ ## [0.66.4] - 2026-04-17
+ 
+ - Removed unintended debug output when parsing permission models.
+diff --git a/snowddl/blueprint/__init__.py b/snowddl/blueprint/__init__.py
+index 70ab0a2..26bdca7 100644
+--- a/snowddl/blueprint/__init__.py
++++ b/snowddl/blueprint/__init__.py
+@@ -25,6 +25,7 @@ from .blueprint import (
+     JoinPolicyBlueprint,
+     MaterializedViewBlueprint,
+     MaskingPolicyBlueprint,
++    MCPServerBlueprint,
+     NetworkPolicyBlueprint,
+     NetworkRuleBlueprint,
+     OutboundShareBlueprint,
+@@ -108,5 +109,6 @@ from .reference import (
+     RowAccessPolicyReference,
+     TagReference,
+ )
++from .mcp_server import MCPServerTool
+ from .semantic_view import SemanticViewExpression, SemanticViewRelationship, SemanticViewTable
+ from .stage import StageWithPath, StageUploadFile
+diff --git a/snowddl/blueprint/blueprint.py b/snowddl/blueprint/blueprint.py
+index b8cbc6f..4e2d57d 100644
+--- a/snowddl/blueprint/blueprint.py
++++ b/snowddl/blueprint/blueprint.py
+@@ -42,6 +42,7 @@ from .reference import (
+     RowAccessPolicyReference,
+     TagReference,
+ )
++from .mcp_server import MCPServerTool
+ from .semantic_view import SemanticViewExpression, SemanticViewRelationship, SemanticViewTable
+ from .stage import StageWithPath
+ from ..model import BaseModelWithConfig
+@@ -275,6 +276,23 @@ class MaterializedViewBlueprint(SchemaObjectBlueprint):
+     cluster_by: Optional[List[str]] = None
+ 
+ 
++class MCPServerBlueprint(SchemaObjectBlueprint):
++    """
++    Snowflake-managed MCP server. Materialised by:
++
++        CREATE OR REPLACE MCP SERVER <db>.<schema>.<name>
++        FROM SPECIFICATION $$ <yaml> $$
++        [COMMENT = '...']
++
++    The YAML body is generated in the resolver from `tools` (and any
++    `spec_extra` fields the user supplied alongside it).
++
++    See: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
++    """
++    tools: List[MCPServerTool]
++    spec_extra: Dict[str, Union[bool, float, int, str, list, dict]] = {}
++
++
+ class MaskingPolicyBlueprint(SchemaObjectBlueprint):
+     arguments: List[NameWithType]
+     returns: DataType
+diff --git a/snowddl/blueprint/mcp_server.py b/snowddl/blueprint/mcp_server.py
+new file mode 100644
+index 0000000..20b02fc
+--- /dev/null
++++ b/snowddl/blueprint/mcp_server.py
+@@ -0,0 +1,32 @@
++from typing import Any, Dict, List, Optional
++
++from ..model import BaseModelWithConfig
++
++
++class MCPServerTool(BaseModelWithConfig):
++    """
++    Single tool entry inside the MCP server FROM SPECIFICATION YAML body.
++
++    Snowflake supports several `type` values for tools:
++      * CORTEX_SEARCH_SERVICE_QUERY
++      * CORTEX_ANALYST_MESSAGE
++      * CORTEX_AGENT_RUN
++      * SYSTEM_EXECUTE_SQL
++      * GENERIC               (custom UDF / procedure)
++
++    Per Snowflake docs, all tool entries share a common header (name, type,
++    title, description) plus per-type optional fields. We accept everything as
++    optional/free-form and serialise the YAML spec in the resolver. The
++    `extra` map captures keys that are type-specific (e.g. `read_only`,
++    `query_timeout`, `warehouse`, `config`, `input_schema`) without us having
++    to mirror Snowflake's evolving schema field-by-field.
++
++    See: https://docs.snowflake.com/en/sql-reference/sql/create-mcp-server
++    """
++
++    name: str
++    type: str
++    title: Optional[str] = None
++    description: Optional[str] = None
++    identifier: Optional[str] = None
++    extra: Dict[str, Any] = {}
+diff --git a/snowddl/blueprint/object_type.py b/snowddl/blueprint/object_type.py
+index 1020503..5554021 100644
+--- a/snowddl/blueprint/object_type.py
++++ b/snowddl/blueprint/object_type.py
+@@ -181,6 +181,13 @@ class ObjectType(Enum):
+         "blueprint_cls": "MaterializedViewBlueprint",
+     }
+ 
++    MCP_SERVER = {
++        "singular": "MCP SERVER",
++        "plural": "MCP SERVERS",
++        "is_future_grant_supported": True,
++        "blueprint_cls": "MCPServerBlueprint",
++    }
++
+     NETWORK_POLICY = {
+         "singular": "NETWORK POLICY",
+         "plural": "NETWORK POLICIES",
+diff --git a/snowddl/config.py b/snowddl/config.py
+index 7a6f5f7..78559e6 100644
+--- a/snowddl/config.py
++++ b/snowddl/config.py
+@@ -103,6 +103,7 @@ class SnowDDLConfig:
+                 owner_create_grants=[
+                     PermissionModelCreateGrant(on=ObjectType.FILE_FORMAT),
+                     PermissionModelCreateGrant(on=ObjectType.FUNCTION),
++                    PermissionModelCreateGrant(on=ObjectType.MCP_SERVER),
+                     PermissionModelCreateGrant(on=ObjectType.PROCEDURE),
+                     PermissionModelCreateGrant(on=ObjectType.TABLE),
+                     PermissionModelCreateGrant(on=ObjectType.VIEW),
+@@ -115,6 +116,7 @@ class SnowDDLConfig:
+                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.FILE_FORMAT),
+                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.FUNCTION),
+                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.MATERIALIZED_VIEW),
++                    PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.MCP_SERVER),
+                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.PIPE),
+                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.PROCEDURE),
+                     PermissionModelFutureGrant(privilege="OWNERSHIP", on=ObjectType.SEQUENCE),
+@@ -142,6 +144,7 @@ class SnowDDLConfig:
+                     PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.FUNCTION),
+                     PermissionModelFutureGrant(privilege="SELECT", on=ObjectType.MATERIALIZED_VIEW),
+                     PermissionModelFutureGrant(privilege="REFERENCES", on=ObjectType.MATERIALIZED_VIEW),
++                    PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.MCP_SERVER),
+                     PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.PROCEDURE),
+                     PermissionModelFutureGrant(privilege="READ", on=ObjectType.STAGE),
+                     PermissionModelFutureGrant(privilege="USAGE", on=ObjectType.STAGE),
+diff --git a/snowddl/parser/__init__.py b/snowddl/parser/__init__.py
+index 4893059..d054536 100644
+--- a/snowddl/parser/__init__.py
++++ b/snowddl/parser/__init__.py
+@@ -23,6 +23,7 @@ from .iceberg_table import IcebergTableParser
+ from .join_policy import JoinPolicyParser
+ from .materialized_view import MaterializedViewParser
+ from .masking_policy import MaskingPolicyParser
++from .mcp_server import MCPServerParser
+ from .network_policy import NetworkPolicyParser
+ from .network_rule import NetworkRuleParser
+ from .outbound_share import OutboundShareParser
+@@ -83,6 +84,7 @@ default_parse_sequence = [
+     MaterializedViewParser,
+     ViewParser,
+     SemanticViewParser,
++    MCPServerParser,
+     PipeParser,
+     StreamParser,
+     TaskParser,
+@@ -124,6 +126,7 @@ singledb_parse_sequence = [
+     MaterializedViewParser,
+     ViewParser,
+     SemanticViewParser,
++    MCPServerParser,
+     PipeParser,
+     StreamParser,
+     TaskParser,
+diff --git a/snowddl/parser/mcp_server.py b/snowddl/parser/mcp_server.py
+new file mode 100644
+index 0000000..46c01a4
+--- /dev/null
++++ b/snowddl/parser/mcp_server.py
+@@ -0,0 +1,79 @@
++from snowddl.blueprint import (
++    MCPServerBlueprint,
++    MCPServerTool,
++    SchemaObjectIdent,
++)
++from snowddl.parser.abc_parser import AbstractParser, ParsedFile
++
++
++# Snowflake's CREATE MCP SERVER `FROM SPECIFICATION` body is a YAML doc with at
++# minimum a `tools:` array. We accept a free-form `spec_extra` mapping for any
++# additional top-level keys Snowflake may add (the feature is in active
++# development and the spec schema may evolve).
++#
++# See: https://docs.snowflake.com/en/sql-reference/sql/create-mcp-server
++# fmt: off
++mcp_server_json_schema = {
++    "type": "object",
++    "properties": {
++        "tools": {
++            "type": "array",
++            "items": {
++                "type": "object",
++                "properties": {
++                    "name": {"type": "string"},
++                    "type": {"type": "string"},
++                    "title": {"type": "string"},
++                    "description": {"type": "string"},
++                    "identifier": {"type": "string"},
++                },
++                "required": ["name", "type"],
++                # Per-type extras (config/input_schema/read_only/query_timeout/
++                # warehouse/...) are accepted as free-form additional fields.
++                "additionalProperties": True,
++            },
++            "minItems": 1,
++        },
++        "spec_extra": {
++            "type": "object",
++            "additionalProperties": True,
++        },
++        "comment": {"type": "string"},
++    },
++    "required": ["tools"],
++    "additionalProperties": False,
++}
++# fmt: on
++
++
++# Header keys that map directly to MCPServerTool fields. Anything else on a
++# tool dict is preserved verbatim under MCPServerTool.extra so it round-trips
++# back into the YAML body emitted by the resolver.
++_TOOL_HEADER_KEYS = {"name", "type", "title", "description", "identifier"}
++
++
++class MCPServerParser(AbstractParser):
++    def load_blueprints(self):
++        self.parse_schema_object_files("mcp_server", mcp_server_json_schema, self.process_mcp_server)
++
++    def process_mcp_server(self, f: ParsedFile):
++        bp = MCPServerBlueprint(
++            full_name=SchemaObjectIdent(self.env_prefix, f.database, f.schema, f.name),
++            tools=[self._build_tool(t) for t in f.params.get("tools", [])],
++            spec_extra=f.params.get("spec_extra", {}) or {},
++            comment=f.params.get("comment"),
++        )
++
++        self.config.add_blueprint(bp)
++
++    def _build_tool(self, tool_def: dict) -> MCPServerTool:
++        extra = {k: v for k, v in tool_def.items() if k not in _TOOL_HEADER_KEYS}
++
++        return MCPServerTool(
++            name=tool_def["name"],
++            type=tool_def["type"],
++            title=tool_def.get("title"),
++            description=tool_def.get("description"),
++            identifier=tool_def.get("identifier"),
++            extra=extra,
++        )
+diff --git a/snowddl/resolver/__init__.py b/snowddl/resolver/__init__.py
+index 8203cf2..1aaf9bd 100644
+--- a/snowddl/resolver/__init__.py
++++ b/snowddl/resolver/__init__.py
+@@ -28,6 +28,7 @@ from .iceberg_table import IcebergTableResolver
+ from .join_policy import JoinPolicyResolver
+ from .masking_policy import MaskingPolicyResolver
+ from .materialized_view import MaterializedViewResolver
++from .mcp_server import MCPServerResolver
+ from .network_policy import NetworkPolicyResolver
+ from .network_rule import NetworkRuleResolver
+ from .outbound_share import OutboundShareResolver
+@@ -98,6 +99,7 @@ default_resolve_sequence = [
+     MaterializedViewResolver,
+     ViewResolver,
+     SemanticViewResolver,
++    MCPServerResolver,
+     PipeResolver,
+     StreamResolver,
+     TaskResolver,
+@@ -178,6 +180,7 @@ singledb_resolve_sequence = [
+     MaterializedViewResolver,
+     ViewResolver,
+     SemanticViewResolver,
++    MCPServerResolver,
+     PipeResolver,
+     StreamResolver,
+     TaskResolver,
+diff --git a/snowddl/resolver/mcp_server.py b/snowddl/resolver/mcp_server.py
+new file mode 100644
+index 0000000..cf99c16
+--- /dev/null
++++ b/snowddl/resolver/mcp_server.py
+@@ -0,0 +1,158 @@
++from typing import Any, Dict, List
++
++import yaml
++
++from snowddl.blueprint import MCPServerBlueprint, MCPServerTool
++from snowddl.resolver.abc_schema_object_resolver import AbstractSchemaObjectResolver, ResolveResult, ObjectType
++
++
++class MCPServerResolver(AbstractSchemaObjectResolver):
++    """
++    Resolver for Snowflake-managed MCP servers (Cortex Agents).
++
++    The Snowflake DDL is:
++
++        CREATE [OR REPLACE] MCP SERVER <db>.<schema>.<name>
++        FROM SPECIFICATION $$<yaml>$$
++        [COMMENT = '...']
++
++    The YAML body's structure is opaque to SnowDDL beyond `tools:` — we
++    rebuild it from the parsed blueprint each apply, then CREATE OR REPLACE if
++    it changed (matching the SemanticView resolver's strategy, since there is
++    no granular ALTER MCP SERVER for tool definitions).
++
++    See: https://docs.snowflake.com/en/sql-reference/sql/create-mcp-server
++    """
++
++    skip_on_empty_blueprints = True
++
++    def get_object_type(self) -> ObjectType:
++        return ObjectType.MCP_SERVER
++
++    def get_existing_objects_in_schema(self, schema: dict):
++        existing_objects = {}
++
++        cur = self.engine.execute_meta(
++            "SHOW MCP SERVERS IN SCHEMA {database:i}.{schema:i}",
++            {
++                "database": schema["database"],
++                "schema": schema["schema"],
++            },
++        )
++
++        for r in cur:
++            existing_objects[f"{r['database_name']}.{r['schema_name']}.{r['name']}"] = {
++                "database": r["database_name"],
++                "schema": r["schema_name"],
++                "name": r["name"],
++                "owner": r.get("owner"),
++                "comment": r["comment"] if r.get("comment") else None,
++            }
++
++        return existing_objects
++
++    def get_blueprints(self):
++        return self.config.get_blueprints_by_type(MCPServerBlueprint)
++
++    def create_object(self, bp: MCPServerBlueprint):
++        create_query = self._build_create_mcp_server_sql(bp)
++
++        # Like SEMANTIC VIEW: ALTER ... SET COMMENT is not yet exposed for
++        # MCP SERVER, so we embed a hash of the spec into the comment so that
++        # subsequent compare_object can detect drift.
++        create_query.append_nl(
++            "COMMENT = {comment}",
++            {
++                "comment": create_query.add_short_hash(bp.comment),
++            },
++        )
++
++        self.engine.execute_safe_ddl(create_query)
++
++        return ResolveResult.CREATE
++
++    def compare_object(self, bp: MCPServerBlueprint, row: dict):
++        create_query = self._build_create_mcp_server_sql(bp)
++
++        if not create_query.compare_short_hash(row["comment"]):
++            create_query.append_nl(
++                "COMMENT = {comment}",
++                {
++                    "comment": create_query.add_short_hash(bp.comment),
++                },
++            )
++
++            self.engine.execute_safe_ddl(create_query)
++
++            return ResolveResult.REPLACE
++
++        return ResolveResult.NOCHANGE
++
++    def drop_object(self, row: dict):
++        self.engine.execute_safe_ddl(
++            "DROP MCP SERVER {database:i}.{schema:i}.{name:i}",
++            {
++                "database": row["database"],
++                "schema": row["schema"],
++                "name": row["name"],
++            },
++        )
++
++        return ResolveResult.DROP
++
++    def _build_create_mcp_server_sql(self, bp: MCPServerBlueprint):
++        query = self.engine.query_builder()
++
++        query.append(
++            "CREATE OR REPLACE MCP SERVER {full_name:i}",
++            {
++                "full_name": bp.full_name,
++            },
++        )
++
++        spec_yaml = self._render_spec_yaml(bp)
++
++        # FROM SPECIFICATION accepts dollar-quoted YAML. We escape any embedded
++        # `$$` defensively even though Snowflake's YAML grammar shouldn't
++        # contain it.
++        spec_yaml = spec_yaml.replace("$$", "$ $")
++
++        query.append_nl(
++            "FROM SPECIFICATION $${spec:r}$$",
++            {
++                "spec": spec_yaml,
++            },
++        )
++
++        return query
++
++    @staticmethod
++    def _render_spec_yaml(bp: MCPServerBlueprint) -> str:
++        tools_payload: List[Dict[str, Any]] = []
++
++        for t in bp.tools:
++            entry: Dict[str, Any] = {
++                "name": t.name,
++                "type": t.type,
++            }
++            if t.title is not None:
++                entry["title"] = t.title
++            if t.description is not None:
++                entry["description"] = t.description
++            if t.identifier is not None:
++                entry["identifier"] = t.identifier
++            # Per-type extras (config / input_schema / read_only / ...) are
++            # appended verbatim so users can adopt new Snowflake fields without
++            # waiting for a SnowDDL release.
++            for k, v in (t.extra or {}).items():
++                entry[k] = v
++            tools_payload.append(entry)
++
++        spec: Dict[str, Any] = {"tools": tools_payload}
++
++        # Top-level keys outside `tools:` (allowed by the YAML grammar) round-
++        # trip through here as well.
++        for k, v in (bp.spec_extra or {}).items():
++            spec[k] = v
++
++        return yaml.safe_dump(spec, sort_keys=False, default_flow_style=False)
+-- 
+2.34.1
+
