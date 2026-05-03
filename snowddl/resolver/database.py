@@ -13,65 +13,10 @@ class DatabaseResolver(AbstractResolver):
         return self.config.get_blueprints_by_type(DatabaseBlueprint)
 
     def create_object(self, bp: DatabaseBlueprint):
-        query = self.engine.query_builder()
-        query.append("CREATE")
-
-        if bp.is_transient:
-            query.append("TRANSIENT")
-
-        query.append(
-            "DATABASE {full_name:i}",
-            {
-                "full_name": bp.full_name,
-            },
+        raise ValueError(
+            f"Database [{bp.full_name}] is defined in YAML config but does not exist in Snowflake. "
+            f"Databases must be created manually in Snowflake before they can be managed by SnowDDL."
         )
-
-        if bp.retention_time is not None:
-            query.append_nl("DATA_RETENTION_TIME_IN_DAYS = {retention_time:d}", {"retention_time": bp.retention_time})
-
-        if bp.external_volume:
-            query.append_nl("EXTERNAL_VOLUME = {external_volume:i}", {"external_volume": bp.external_volume})
-
-        if bp.catalog:
-            query.append_nl("CATALOG = {catalog:i}", {"catalog": bp.catalog})
-
-        if bp.catalog_sync:
-            query.append_nl("CATALOG_SYNC = {catalog_sync:i}", {"catalog_sync": bp.catalog_sync})
-
-        if bp.log_level:
-            query.append_nl("LOG_LEVEL = {log_level}", {"log_level": bp.log_level})
-
-        if bp.log_event_level:
-            query.append_nl("LOG_EVENT_LEVEL = {log_event_level}", {"log_event_level": bp.log_event_level})
-
-        if bp.metric_level:
-            query.append_nl("METRIC_LEVEL = {metric_level}", {"metric_level": bp.metric_level})
-
-        if bp.trace_level:
-            query.append_nl("TRACE_LEVEL = {trace_level}", {"trace_level": bp.trace_level})
-
-        if bp.quoted_identifiers_ignore_case:
-            query.append_nl(
-                "QUOTED_IDENTIFIERS_IGNORE_CASE = {quoted_identifiers_ignore_case:b}",
-                {
-                    "quoted_identifiers_ignore_case": bp.quoted_identifiers_ignore_case
-                }
-            )
-
-        if bp.comment:
-            query.append_nl(
-                "COMMENT = {comment}",
-                {
-                    "comment": bp.comment,
-                },
-            )
-
-        self.engine.execute_safe_ddl(query)
-
-        # Drop schema PUBLIC which is created automatically
-        self.engine.execute_safe_ddl("DROP SCHEMA {database:i}.{schema:i}", {"database": bp.full_name, "schema": "PUBLIC"})
-
-        return ResolveResult.CREATE
 
     def compare_object(self, bp: DatabaseBlueprint, row: dict):
         result = ResolveResult.NOCHANGE

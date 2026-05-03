@@ -44,60 +44,10 @@ class WarehouseResolver(AbstractResolver):
         return self.config.get_blueprints_by_type(WarehouseBlueprint)
 
     def create_object(self, bp: WarehouseBlueprint):
-        query = self.engine.query_builder()
-
-        query.append(
-            "CREATE WAREHOUSE {name:i}",
-            {
-                "name": bp.full_name,
-            },
+        raise ValueError(
+            f"Warehouse [{bp.full_name}] is defined in YAML config but does not exist in Snowflake. "
+            f"Warehouses must be created manually in Snowflake before they can be managed by SnowDDL."
         )
-
-        query.append_nl("WAREHOUSE_TYPE = {type}", {"type": bp.type})
-        query.append_nl("WAREHOUSE_SIZE = {size}", {"size": self._normalise_warehouse_size(bp.size)})
-        query.append_nl("AUTO_SUSPEND = {auto_suspend:d}", {"auto_suspend": bp.auto_suspend})
-        query.append_nl("AUTO_RESUME = TRUE")
-        query.append_nl("INITIALLY_SUSPENDED = TRUE")
-
-        if bp.generation:
-            query.append_nl("GENERATION = {generation}", {"generation": bp.generation})
-
-        if bp.resource_constraint:
-            query.append_nl("RESOURCE_CONSTRAINT = {resource_constraint}", {"resource_constraint": bp.resource_constraint})
-
-        if self.engine.context.edition >= Edition.ENTERPRISE:
-            query.append_nl("MIN_CLUSTER_COUNT = {min_cluster_count:d}", {"min_cluster_count": bp.min_cluster_count})
-            query.append_nl("MAX_CLUSTER_COUNT = {max_cluster_count:d}", {"max_cluster_count": bp.max_cluster_count})
-            query.append_nl("SCALING_POLICY = {scaling_policy}", {"scaling_policy": bp.scaling_policy})
-
-            if bp.enable_query_acceleration:
-                query.append_nl(
-                    "ENABLE_QUERY_ACCELERATION = {enable_query_acceleration:b}",
-                    {"enable_query_acceleration": bp.enable_query_acceleration},
-                )
-
-            if bp.query_acceleration_max_scale_factor:
-                query.append_nl(
-                    "QUERY_ACCELERATION_MAX_SCALE_FACTOR = {query_acceleration_max_scale_factor:d}",
-                    {"query_acceleration_max_scale_factor": bp.query_acceleration_max_scale_factor},
-                )
-
-        query.append_nl("COMMENT = {comment}", {"comment": bp.comment})
-        query.append_nl(self._build_common_parameters(bp))
-
-        self.engine.execute_safe_ddl(query)
-
-        if bp.resource_monitor:
-            self.engine.execute_safe_ddl(
-                "ALTER WAREHOUSE {full_name:i} SET RESOURCE_MONITOR = {resource_monitor:i}",
-                {
-                    "full_name": bp.full_name,
-                    "resource_monitor": bp.resource_monitor,
-                },
-                condition=self.engine.settings.execute_resource_monitor,
-            )
-
-        return ResolveResult.CREATE
 
     def compare_object(self, bp: WarehouseBlueprint, row: dict):
         result = ResolveResult.NOCHANGE
